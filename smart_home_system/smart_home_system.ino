@@ -6,18 +6,18 @@
 #include <MFRC522.h>
 #include <RTClib.h>
 
-// Pin Configurations
-const int pirPin = 2;       
-const int flamePin = 4;     
-const int buzzerPin = 8;    
-const int servoPin = 9;     
-const int tempPin = A0;     
+// 1. PIN CONFIGURATION (MATCHED EXACTLY TO YOUR HARDWARE)
+const int tempPin = A0;     // Thermistor Module AO
+const int flamePin = 4;     // Photodiode Voltage Divider Junction
+const int pirPin = 2;       // PIR Motion Sensor OUT
+const int buzzerPin = 8;    // Active Buzzer Positive (+)
+const int servoPin = 9;     // Servo Motor Signal (Orange/Yellow)
 
-// RFID Pins (SPI Bus requires specific pins on Uno)
-const int rfidSS = 10;
-const int rfidRST = 3;
+// RFID RC522 Pins
+const int rfidRST = 3;      
+const int rfidSS = 10;      
 
-// Keypad Configuration
+// 4x4 Matrix Keypad Ribbon Pins (Left to Right: 1 to 8)
 const byte ROWS = 4; 
 const byte COLS = 4; 
 char keys[ROWS][COLS] = {
@@ -26,17 +26,17 @@ char keys[ROWS][COLS] = {
   {'7','8','9','C'},
   {'*','0','#','D'}
 };
-// Repinned to make room for RFID SPI pins (11, 12, 13)
-byte rowPins[ROWS] = {5, 6, 7, A1}; 
-byte colPins[COLS] = {A2, A3, 0, 1}; // Using pins 0 and 1 safely for scanning  
+byte rowPins[ROWS] = {5, 6, 7, A1};   // Keypad Pins 1, 2, 3, 4
+byte colPins[COLS] = {A2, A3, 0, 1};  // Keypad Pins 5, 6, 7, 8
 
+// 2. MODULE INSTANTIATIONS
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 MFRC522 rfid(rfidSS, rfidRST);
 RTC_DS3231 rtc;
 Servo doorServo;
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// System Variables
+// 3. SYSTEM VARIABLES
 const String correctPIN = "1234";
 String inputPIN = "";
 bool doorUnlocked = false;
@@ -44,71 +44,77 @@ unsigned long doorUnlockTime = 0;
 unsigned long lastDisplayUpdate = 0;
 
 void setup() {
+  // Safe pin initialization
   pinMode(pirPin, INPUT);
-  pinMode(flamePin, INPUT);
+  pinMode(flamePin, INPUT); 
   pinMode(buzzerPin, OUTPUT);
   
   doorServo.attach(servoPin);
-  doorServo.write(0); 
+  doorServo.write(0); // Ensure door starts locked (0 degrees)
   
-  SPI.begin();     // Init SPI bus for RFID
-  rfid.PCD_Init(); // Init RFID reader
-  rtc.begin();     // Init Real-Time Clock
+  // Initialize communication buses
+  SPI.begin();     
+  rfid.PCD_Init(); 
+  rtc.begin();     
   
   lcd.init();
   lcd.backlight();
   lcd.clear();
-  lcd.print("ULTIMATE SMART");
-  lcd.setCursor(0,1);
-  lcd.print("HOME SYSTEM");
+  lcd.print("SMART HOME V3.0");
   delay(2000);
   lcd.clear();
-  
-  // Optional: Set RTC time if it lost battery power (Year, Month, Day, Hour, Min, Sec)
-  // rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 }
 
 void loop() {
-  int flameState = digitalRead(flamePin);
   int motionState = digitalRead(pirPin);
+  int flameState = digitalRead(flamePin); // Voltage divider drops to LOW when fire conducts
   DateTime now = rtc.now();
 
-  // 1. CRITICAL SAFETY OVERRIDE (FIRE)
+  // ==========================================
+  // PRIORITY 1: SAFETY FIRE OVERRIDE
+  // ==========================================
   if (flameState == LOW) { 
+    doorServo.write(90); // Safety fail-safe: automatically unlock door for evacuation
     lcd.setCursor(0, 0);
     lcd.print("** FIRE ALERT **");
     lcd.setCursor(0, 1);
     lcd.print("EVACUATE HOUSE  ");
     digitalWrite(buzzerPin, HIGH); delay(100);
     digitalWrite(buzzerPin, LOW);  delay(100);
-    return; 
+    return; // Halt all other code execution during fire emergency
   }
 
-  // 2. INTRUDER ALARM LOGIC (Armed between 10PM and 6AM)
+  // ==========================================
+  // PRIORITY 2: TIME-BASED INTRUDER SECURITY
+  // ==========================================
   if (motionState == HIGH && !doorUnlocked) {
+    // Night hours arming condition: 10:00 PM (22) to 6:00 AM (6)
     if (now.hour() >= 22 || now.hour() < 6) {
       lcd.setCursor(0, 0);
       lcd.print("INTRUDER ALERT! ");
       lcd.setCursor(0, 1);
       lcd.print("SYSTEM BREACHED ");
       digitalWrite(buzzerPin, HIGH);
-      return;
+      return; 
     }
   } else if (motionState == LOW && !doorUnlocked) {
     digitalWrite(buzzerPin, LOW);
   }
 
-  // 3. DOOR LOCK TIMEOUT
+  // ==========================================
+  // PRIORITY 3: AUTOMATIC DOOR CLOSURE TIMER
+  // ==========================================
   if (doorUnlocked && (millis() - doorUnlockTime > 5000)) {
-    doorServo.write(0); 
+    doorServo.write(0); // Secure the lock after 5 seconds
     doorUnlocked = false;
     inputPIN = "";
     lcd.clear();
   }
 
-  // 4. RFID SWIPE DETECTION
+  // ==========================================
+  // PRIORITY 4: CONTACTLESS RFID AUTHENTICATION
+  // ==========================================
   if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
-    // Found a card! Open the door
     lcd.clear();
     lcd.print("CARD VERIFIED");
     lcd.setCursor(0,1);
@@ -120,12 +126,16 @@ void loop() {
     rfid.PICC_HaltA();
   }
 
-  // 5. KEYPAD PIN DETECTION
+  // ==========================================
+  // PRIORITY 5: MANUAL KEYPAD AUTHENTICATION
+  // ==========================================
   char key = keypad.getKey();
   if (key) {
-    if (key == '#') {
+    if (key == '#') { // '#' acts as Clear/Reset input
       inputPIN = "";
       lcd.clear();
+    } else if (key == '*' || key == 'A' || key == 'B' || key == 'C' || key == 'D') {
+      // Ignore functional/alpha keys to prevent incorrect password entry
     } else {
       inputPIN += key;
       if (inputPIN.length() == 4) {
@@ -147,11 +157,13 @@ void loop() {
     }
   }
 
-  // 6. DASHBOARD METRICS DISPLAY
+  // ==========================================
+  // PRIORITY 6: STATUS DASHBOARD REFRESH
+  // ==========================================
   if (millis() - lastDisplayUpdate > 500 && !doorUnlocked) {
     lastDisplayUpdate = millis();
     
-    // Read Thermistor Temperature
+    // Read Thermistor values from A0 and parse Steinhart-Hart equation parameters
     int rawAnalog = analogRead(tempPin);
     float resistance = (1023.0 / (float)rawAnalog) - 1.0;
     resistance = 10000.0 / resistance;
@@ -159,7 +171,7 @@ void loop() {
     tempC = log(tempC); tempC /= 3950.0; tempC += 1.0 / (25.0 + 273.15);
     tempC = 1.0 / tempC; tempC -= 273.15;
 
-    // Line 1: Clock & Temperature
+    // Line 1: Real-time clock output & parsed temperature values
     lcd.setCursor(0, 0);
     if(now.hour() < 10) lcd.print("0");
     lcd.print(now.hour());
@@ -168,10 +180,10 @@ void loop() {
     lcd.print(now.minute());
     lcd.print("  T:");
     lcd.print(tempC, 1);
-    lcd.print((char)223);
+    lcd.print((char)223); // Degree symbol
     lcd.print("C   ");
 
-    // Line 2: PIN Entry Mask
+    // Line 2: Visual feedback for keypad buffer string
     lcd.setCursor(0, 1);
     lcd.print("PIN: ");
     lcd.print(inputPIN);
